@@ -12,10 +12,4 @@
 / {
 	model = "Freescale Layerscape 2085a software Simulator model";
 	compatible = "fsl,ls1088a-simu", "fsl,ls1088a";
-
-	ethernet@2210000 {
-		compatible = "smsc,lan91c111";
-		reg = <0x0 0x2210000 0x0 0x100>;
-		interrupts = <0 58 0x1>;
-	};
 };
