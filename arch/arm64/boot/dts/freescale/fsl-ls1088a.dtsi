@@ -123,23 +123,6 @@
 					     "cga-pll2-div3", "cga-pll2-div4";
 		};
 
-		cgb_pll1: pll@10080 {
-			compatible = "fsl,qoriq-core-pll-3.0";
-			#clock-cells = <1>;
-			reg = <0x10080 0x10>;
-			clocks = <&sysclk>;
-			clock-output-names = "cgb-pll1", "cgb-pll1-div2",
-					     "cgb-pll1-div3", "cgb-pll1-div4";
-		};
-
-		cgb_pll2: pll@100a0 {
-			compatible = "fsl,qoriq-core-pll-3.0";
-			#clock-cells = <1>;
-			reg = <0x100a0 0x10>;
-			clocks = <&sysclk>;
-			clock-output-names = "cgb-pll2", "cgb-pll2-div2",
-					     "cgb-pll2-div3", "cgb-pll2-div4";
-		};
 
 		platform_clk: pll@60080 {
 			compatible = "fsl,qoriq-core-pll-3.0";
