@@ -155,27 +155,6 @@
 			clock-output-names = "cluster2-clk";
 		};
 
-		cluster3_clk: clk0c0@70040 {
-			compatible = "fsl,qoriq-core-mux-3.0";
-			#clock-cells = <0>;
-			reg = <0x70040 0x10>;
-			clock-names = "pll1cgb", "pll1cgb-div2", "pll1cgb-div4",
-				      "pll2cgb", "pll2cgb-div2", "pll2cgb-div4";
-			clocks = <&cgb_pll1 0>, <&cgb_pll1 1>, <&cgb_pll1 2>,
-				 <&cgb_pll2 0>, <&cgb_pll2 1>, <&cgb_pll2 2>;
-			clock-output-names = "cluster3-clk";
-		};
-
-		cluster4_clk: clk0c0@70060 {
-			compatible = "fsl,qoriq-core-mux-3.0";
-			#clock-cells = <0>;
-			reg = <0x70060 0x10>;
-			clock-names = "pll1cgb", "pll1cgb-div2", "pll1cgb-div4",
-				      "pll2cgb", "pll2cgb-div2", "pll2cgb-div4";
-			clocks = <&cgb_pll1 0>, <&cgb_pll1 1>, <&cgb_pll1 2>,
-				 <&cgb_pll2 0>, <&cgb_pll2 1>, <&cgb_pll2 2>;
-			clock-output-names = "cluster4-clk";
-		};
 	};
 
 	serial0: serial@21c0500 {
