@@ -274,12 +274,13 @@ static void dpaa2_eth_get_ethtool_stats(struct net_device *net_dev,
 #endif
 }
 
-static int cls_key_off(struct dpaa2_eth_priv *priv, u64 flag)
+static int cls_key_off(struct dpaa2_eth_priv *priv, int prot, int field)
 {
 	int i, off = 0;
 
 	for (i = 0; i < priv->num_hash_fields; i++) {
-		if (priv->hash_fields[i].rxnfc_field & flag)
+		if (priv->hash_fields[i].cls_prot == prot &&
+		    priv->hash_fields[i].cls_field == field)
 			return off;
 		off += priv->hash_fields[i].size;
 	}
@@ -316,15 +317,24 @@ void check_cls_support(struct dpaa2_eth_priv *priv)
 		}
 	}
 
-	if (dpaa2_eth_fs_enabled(priv) && !dpaa2_eth_hash_enabled(priv)) {
-		dev_dbg(dev, "DPNI_OPT_DIST_HASH option missing. Flow steering is disabled\n");
-		goto disable_cls;
+	if (dpaa2_eth_fs_enabled(priv)) {
+		if (!dpaa2_eth_hash_enabled(priv)) {
+			dev_dbg(dev, "DPNI_OPT_DIST_HASH option missing. Steering is disabled\n");
+			goto disable_cls;
+		}
+		if (!dpaa2_eth_fs_mask_enabled(priv)) {
+			dev_dbg(dev, "Key masks not supported. Steering is disabled\n");
+			goto disable_fs;
+		}
 	}
 
 	return;
 
 disable_cls:
-	priv->dpni_attrs.options &= ~(DPNI_OPT_DIST_FS | DPNI_OPT_DIST_HASH);
+	priv->dpni_attrs.options &= ~DPNI_OPT_DIST_HASH;
+disable_fs:
+	priv->dpni_attrs.options &= ~(DPNI_OPT_DIST_FS |
+				      DPNI_OPT_FS_MASK_SUPPORT);
 }
 
 static int prep_cls_rule(struct net_device *net_dev,
@@ -333,32 +343,32 @@ static int prep_cls_rule(struct net_device *net_dev,
 {
 	struct dpaa2_eth_priv *priv = netdev_priv(net_dev);
 	struct ethtool_tcpip4_spec *l4ip4_h, *l4ip4_m;
+	struct ethtool_usrip4_spec *usrip4_h, *usrip4_m;
 	struct ethhdr *eth_h, *eth_m;
 	struct ethtool_flow_ext *ext_h, *ext_m;
 	const u8 key_size = cls_key_size(priv);
 	void *msk = key + key_size;
+	u8 nextp, offset;
 
 	memset(key, 0, key_size * 2);
-
-	/* This code is a major mess, it has to be cleaned up after the
-	 * classification mask issue is fixed and key format will be made static
-	 */
 
 	switch (fs->flow_type & 0xff) {
 	case TCP_V4_FLOW:
 		l4ip4_h = &fs->h_u.tcp_ip4_spec;
 		l4ip4_m = &fs->m_u.tcp_ip4_spec;
-		/* TODO: ethertype to match IPv4 and protocol to match TCP */
+		nextp = IPPROTO_TCP;
 		goto l4ip4;
 
 	case UDP_V4_FLOW:
 		l4ip4_h = &fs->h_u.udp_ip4_spec;
 		l4ip4_m = &fs->m_u.udp_ip4_spec;
+		nextp = IPPROTO_UDP;
 		goto l4ip4;
 
 	case SCTP_V4_FLOW:
 		l4ip4_h = &fs->h_u.sctp_ip4_spec;
 		l4ip4_m = &fs->m_u.sctp_ip4_spec;
+		nextp = IPPROTO_SCTP;
 
 l4ip4:
 		if (l4ip4_m->tos) {
@@ -368,32 +378,44 @@ l4ip4:
 		}
 
 		if (l4ip4_m->ip4src) {
-			*(u32 *)(key + cls_key_off(priv, RXH_IP_SRC))
-				= l4ip4_h->ip4src;
-			*(u32 *)(msk + cls_key_off(priv, RXH_IP_SRC))
-				= l4ip4_m->ip4src;
+			offset = cls_key_off(priv, NET_PROT_IP, NH_FLD_IP_SRC);
+			*(u32 *)(key + offset) = l4ip4_h->ip4src;
+			*(u32 *)(msk + offset) = l4ip4_m->ip4src;
 		}
 
 		if (l4ip4_m->ip4dst) {
-			*(u32 *)(key + cls_key_off(priv, RXH_IP_DST))
-				= l4ip4_h->ip4dst;
-			*(u32 *)(msk + cls_key_off(priv, RXH_IP_DST))
-				= l4ip4_m->ip4dst;
+			offset = cls_key_off(priv, NET_PROT_IP, NH_FLD_IP_DST);
+			*(u32 *)(key + offset) = l4ip4_h->ip4dst;
+			*(u32 *)(msk + offset) = l4ip4_m->ip4dst;
 		}
 
 		if (l4ip4_m->psrc) {
-			*(u32 *)(key + cls_key_off(priv, RXH_L4_B_0_1))
-				= l4ip4_h->psrc;
-			*(u32 *)(msk + cls_key_off(priv, RXH_L4_B_0_1))
-				= l4ip4_m->psrc;
+			offset = cls_key_off(priv, NET_PROT_UDP,
+					     NH_FLD_UDP_PORT_SRC);
+			*(u32 *)(key + offset) = l4ip4_h->psrc;
+			*(u32 *)(msk + offset) = l4ip4_m->psrc;
 		}
 
 		if (l4ip4_m->pdst) {
-			*(u32 *)(key + cls_key_off(priv, RXH_L4_B_2_3))
-				= l4ip4_h->pdst;
-			*(u32 *)(msk + cls_key_off(priv, RXH_L4_B_2_3))
-				= l4ip4_m->pdst;
+			offset = cls_key_off(priv, NET_PROT_UDP,
+					     NH_FLD_UDP_PORT_DST);
+			*(u32 *)(key + offset) = l4ip4_h->pdst;
+			*(u32 *)(msk + offset) = l4ip4_m->pdst;
 		}
+		break;
+
+		/* Only apply the rule for the user-specified L4 protocol
+		 * and if ethertype matches IPv4
+		 */
+		offset = cls_key_off(priv, NET_PROT_ETH, NH_FLD_ETH_TYPE);
+		*(u16 *)(key + offset) = htons(ETH_P_IP);
+		*(u16 *)(msk + offset) = 0xFFFF;
+
+		offset = cls_key_off(priv, NET_PROT_IP, NH_FLD_IP_PROTO);
+		*(u8 *)(key + offset) = nextp;
+		*(u8 *)(msk + offset) = 0xFF;
+
+		/* TODO: check IP version */
 		break;
 
 	case ETHER_FLOW:
@@ -406,26 +428,78 @@ l4ip4:
 		}
 
 		if (!is_zero_ether_addr(eth_m->h_source)) {
-			netdev_err(net_dev, "ETH SRC is not supported!\n");
-			return -EOPNOTSUPP;
+			offset = cls_key_off(priv, NET_PROT_ETH, NH_FLD_ETH_SA);
+			ether_addr_copy(key + offset, eth_h->h_source);
+			ether_addr_copy(msk + offset, eth_m->h_source);
 		}
 
 		if (!is_zero_ether_addr(eth_m->h_dest)) {
-			ether_addr_copy(key + cls_key_off(priv, RXH_L2DA),
-					eth_h->h_dest);
-			ether_addr_copy(msk + cls_key_off(priv, RXH_L2DA),
-					eth_m->h_dest);
+			offset = cls_key_off(priv, NET_PROT_ETH, NH_FLD_ETH_DA);
+			ether_addr_copy(key + offset, eth_h->h_dest);
+			ether_addr_copy(msk + offset, eth_m->h_dest);
 		}
 		break;
 
+	case IP_USER_FLOW:
+		usrip4_h = &fs->h_u.usr_ip4_spec;
+		usrip4_m = &fs->m_u.usr_ip4_spec;
+
+		/* we only support IP src/dst and L4 proto for now */
+		if (usrip4_m->tos)
+			return -EOPNOTSUPP;
+
+		if (usrip4_m->ip4src) {
+			offset = cls_key_off(priv, NET_PROT_IP, NH_FLD_IP_SRC);
+			*(u32 *)(key + offset) = usrip4_h->ip4src;
+			*(u32 *)(msk + offset) = usrip4_m->ip4src;
+		}
+		if (usrip4_m->ip4dst) {
+			offset = cls_key_off(priv, NET_PROT_IP, NH_FLD_IP_DST);
+			*(u32 *)(key + offset) = usrip4_h->ip4dst;
+			*(u32 *)(msk + offset) = usrip4_m->ip4dst;
+		}
+		if (usrip4_m->proto) {
+			offset = cls_key_off(priv, NET_PROT_IP, NH_FLD_IP_PROTO);
+			*(u32 *)(key + offset) = usrip4_h->proto;
+			*(u32 *)(msk + offset) = usrip4_m->proto;
+		}
+		if (usrip4_m->l4_4_bytes) {
+			offset = cls_key_off(priv, NET_PROT_UDP,
+					     NH_FLD_UDP_PORT_SRC);
+			*(u16 *)(key + offset) = usrip4_h->l4_4_bytes << 16;
+			*(u16 *)(msk + offset) = usrip4_m->l4_4_bytes << 16;
+
+			offset = cls_key_off(priv, NET_PROT_UDP,
+					     NH_FLD_UDP_PORT_DST);
+			*(u16 *)(key + offset) = usrip4_h->l4_4_bytes & 0xFFFF;
+			*(u16 *)(msk + offset) = usrip4_m->l4_4_bytes & 0xFFFF;
+		}
+
+		/* Ethertype must be IP */
+		offset = cls_key_off(priv, NET_PROT_ETH, NH_FLD_ETH_TYPE);
+		*(u16 *)(key + offset) = htons(ETH_P_IP);
+		*(u16 *)(msk + offset) = 0xFFFF;
+
+		break;
+
 	default:
-		/* TODO: IP user flow, AH, ESP */
+		/* TODO: AH, ESP */
 		return -EOPNOTSUPP;
 	}
 
 	if (fs->flow_type & FLOW_EXT) {
-		/* TODO: ETH data, VLAN ethertype, VLAN TCI .. */
-		return -EOPNOTSUPP;
+		ext_h = &fs->h_ext;
+		ext_m = &fs->m_ext;
+
+		if (ext_m->vlan_etype)
+			return -EOPNOTSUPP;
+
+		if (ext_m->vlan_tci) {
+			offset = cls_key_off(priv, NET_PROT_VLAN,
+					     NH_FLD_VLAN_TCI);
+			*(u16 *)(key + offset) = ext_h->vlan_tci;
+			*(u16 *)(msk + offset) = ext_m->vlan_tci;
+		}
 	}
 
 	if (fs->flow_type & FLOW_MAC_EXT) {
@@ -433,10 +507,9 @@ l4ip4:
 		ext_m = &fs->m_ext;
 
 		if (!is_zero_ether_addr(ext_m->h_dest)) {
-			ether_addr_copy(key + cls_key_off(priv, RXH_L2DA),
-					ext_h->h_dest);
-			ether_addr_copy(msk + cls_key_off(priv, RXH_L2DA),
-					ext_m->h_dest);
+			offset = cls_key_off(priv, NET_PROT_ETH, NH_FLD_ETH_DA);
+			ether_addr_copy(key + offset, ext_h->h_dest);
+			ether_addr_copy(msk + offset, ext_m->h_dest);
 		}
 	}
 	return 0;
@@ -482,21 +555,6 @@ static int do_cls(struct net_device *net_dev,
 
 	rule_cfg.mask_iova = rule_cfg.key_iova + rule_cfg.key_size;
 
-	if (!(priv->dpni_attrs.options & DPNI_OPT_FS_MASK_SUPPORT)) {
-		int i;
-		u8 *mask = dma_mem + rule_cfg.key_size;
-
-		/* check that nothing is masked out, otherwise it won't work */
-		for (i = 0; i < rule_cfg.key_size; i++) {
-			if (mask[i] == 0xff)
-				continue;
-			netdev_err(net_dev, "dev does not support masking!\n");
-			err = -EOPNOTSUPP;
-			goto err_free_mem;
-		}
-		rule_cfg.mask_iova = 0;
-	}
-
 	/* No way to control rule order in firmware */
 	if (add)
 		err = dpni_add_fs_entry(priv->mc_io, 0, priv->mc_token, 0,
@@ -508,7 +566,7 @@ static int do_cls(struct net_device *net_dev,
 	dma_unmap_single(dev, rule_cfg.key_iova,
 			 rule_cfg.key_size * 2, DMA_TO_DEVICE);
 	if (err) {
-		netdev_err(net_dev, "dpaa2_add_cls() error %d\n", err);
+		netdev_err(net_dev, "dpaa2_add/remove_cls() error %d\n", err);
 		goto err_free_mem;
 	}
 
