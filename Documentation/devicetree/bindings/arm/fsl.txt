@@ -147,3 +147,11 @@ Required root node properties:
 LS2080A ARMv8 based RDB Board
 Required root node properties:
     - compatible = "fsl,ls2080a-rdb", "fsl,ls2080a";
+
+LS2088A ARMv8 based Simulator model
+Required root node properties:
+    - compatible = "fsl,ls2088a-simu", "fsl,ls2088a"
+
+LS2088A ARMv8 based Emulator model
+Required root node properties:
+    - compatible = "fsl,ls2088a-emu", "fsl,ls2088a"
