@@ -79,6 +79,8 @@
 #define CPLD_RST_PCIE_SLOT	0x14
 #define CPLD_RST_PCIESLOT	0x3
 
+#define PCIE_IATU_NUM		6
+
 struct ls_pcie;
 
 struct ls_pcie_pm_data {
@@ -192,6 +194,14 @@ static void ls_pcie_disable_bars(struct ls_pcie *pcie)
 		iowrite32(0,
 			  pcie->dbi + PCIE_CS2_OFFSET + PCI_ROM_ADDRESS1);
 	}
+}
+
+static void ls_pcie_disable_outbound_atus(struct ls_pcie *pcie)
+{
+	int i;
+
+	for (i = 0; i < PCIE_IATU_NUM; i++)
+		dw_pcie_disable_outbound_atu(&pcie->pp, i);
 }
 
 static int ls1021_pcie_link_up(struct pcie_port *pp)
@@ -341,6 +351,7 @@ static void ls_pcie_host_init(struct pcie_port *pp)
 	iowrite32(0, pcie->dbi + PCIE_DBI_RO_WR_EN);
 
 	ls_pcie_disable_bars(pcie);
+	ls_pcie_disable_outbound_atus(pcie);
 }
 
 static int ls_pcie_msi_host_init(struct pcie_port *pp,
