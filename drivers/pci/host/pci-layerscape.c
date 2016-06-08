@@ -36,12 +36,19 @@
 #define LTSSM_PCIE_L0		0x11 /* L0 state */
 #define LTSSM_PCIE_L2_IDLE	0x15 /* L2 idle state */
 
+#define PCIE_SRIOV_OFFSET	0x178
+
+/* CS2 */
+#define PCIE_CS2_OFFSET		0x1000 /* For PCIe without SR-IOV */
+#define PCIE_ENABLE_CS2		0x80000000 /* For PCIe with SR-IOV */
+
 /* PEX Internal Configuration Registers */
 #define PCIE_STRFMR1		0x71c /* Symbol Timer & Filter Mask Register1 */
 #define PCIE_DBI_RO_WR_EN	0x8bc /* DBI Read-Only Write Enable Register */
 
 /* PEX LUT registers */
 #define PCIE_LUT_DBG		0x7FC /* PEX LUT Debug Register */
+#define PCIE_LUT_CTRL0		0x7f8
 #define PCIE_LUT_UDR(n)		(0x800 + (n) * 8)
 #define PCIE_LUT_LDR(n)		(0x804 + (n) * 8)
 #define PCIE_LUT_MASK_ALL	0xffff
@@ -111,6 +118,8 @@ struct ls_pcie {
 
 #define to_ls_pcie(x)	container_of(x, struct ls_pcie, pp)
 
+static void ls_pcie_host_init(struct pcie_port *pp);
+
 u32 set_pcie_streamid_translation(struct pci_dev *pdev, u32 devid)
 {
 	u32 index, streamid;
@@ -161,6 +170,28 @@ static void ls_pcie_drop_msg_tlp(struct ls_pcie *pcie)
 	val = ioread32(pcie->dbi + PCIE_STRFMR1);
 	val &= 0xDFFFFFFF;
 	iowrite32(val, pcie->dbi + PCIE_STRFMR1);
+}
+
+/* Disable all bars in RC mode */
+static void ls_pcie_disable_bars(struct ls_pcie *pcie)
+{
+	u32 header;
+
+	header = ioread32(pcie->dbi + PCIE_SRIOV_OFFSET);
+	if (PCI_EXT_CAP_ID(header) == PCI_EXT_CAP_ID_SRIOV) {
+		iowrite32(PCIE_ENABLE_CS2, pcie->lut + PCIE_LUT_CTRL0);
+		iowrite32(0, pcie->dbi + PCI_BASE_ADDRESS_0);
+		iowrite32(0, pcie->dbi + PCI_BASE_ADDRESS_1);
+		iowrite32(0, pcie->dbi + PCI_ROM_ADDRESS1);
+		iowrite32(0, pcie->lut + PCIE_LUT_CTRL0);
+	} else {
+		iowrite32(0,
+			  pcie->dbi + PCIE_CS2_OFFSET + PCI_BASE_ADDRESS_0);
+		iowrite32(0,
+			  pcie->dbi + PCIE_CS2_OFFSET + PCI_BASE_ADDRESS_1);
+		iowrite32(0,
+			  pcie->dbi + PCIE_CS2_OFFSET + PCI_ROM_ADDRESS1);
+	}
 }
 
 static int ls1021_pcie_link_up(struct pcie_port *pp)
@@ -272,9 +303,9 @@ static void ls1021_pcie_host_init(struct pcie_port *pp)
 	}
 	pcie->index = index[1];
 
-	dw_pcie_setup_rc(pp);
+	ls_pcie_host_init(pp);
 
-	ls_pcie_drop_msg_tlp(pcie);
+	dw_pcie_setup_rc(pp);
 }
 
 static int ls_pcie_link_up(struct pcie_port *pp)
@@ -308,6 +339,8 @@ static void ls_pcie_host_init(struct pcie_port *pp)
 	ls_pcie_clear_multifunction(pcie);
 	ls_pcie_drop_msg_tlp(pcie);
 	iowrite32(0, pcie->dbi + PCIE_DBI_RO_WR_EN);
+
+	ls_pcie_disable_bars(pcie);
 }
 
 static int ls_pcie_msi_host_init(struct pcie_port *pp,
