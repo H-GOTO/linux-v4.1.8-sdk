@@ -12,7 +12,7 @@
 
 /dts-v1/;
 
-/include/ "fsl-ls2088a.dtsi"
+#include "fsl-ls2088a.dtsi"
 
 / {
 	model = "Freescale Layerscape 2088A software Emulator model";
