@@ -443,7 +443,7 @@
 		       0x20 0x00000000 0x0 0x00001000>; /* configuration space */
 		reg-names = "regs", "config";
 		interrupts = <0 108 0x4>; /* Level high type */
-		interrupt-names = "intr";
+		interrupt-names = "aer";
 		#address-cells = <3>;
 		#size-cells = <2>;
 		device_type = "pci";
@@ -468,7 +468,7 @@
 		       0x28 0x00000000 0x0 0x00001000>; /* configuration space */
 		reg-names = "regs", "config";
 		interrupts = <0 113 0x4>; /* Level high type */
-		interrupt-names = "intr";
+		interrupt-names = "aer";
 		#address-cells = <3>;
 		#size-cells = <2>;
 		device_type = "pci";
@@ -493,7 +493,7 @@
 		       0x30 0x00000000 0x0 0x00001000>; /* configuration space */
 		reg-names = "regs", "config";
 		interrupts = <0 118 0x4>; /* Level high type */
-		interrupt-names = "intr";
+		interrupt-names = "aer";
 		#address-cells = <3>;
 		#size-cells = <2>;
 		device_type = "pci";
@@ -518,7 +518,7 @@
 		       0x38 0x00000000 0x0 0x00001000>; /* configuration space */
 		reg-names = "regs", "config";
 		interrupts = <0 123 0x4>; /* Level high type */
-		interrupt-names = "intr";
+		interrupt-names = "aer";
 		#address-cells = <3>;
 		#size-cells = <2>;
 		device_type = "pci";
