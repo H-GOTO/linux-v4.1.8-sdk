@@ -447,6 +447,7 @@
 		#address-cells = <3>;
 		#size-cells = <2>;
 		device_type = "pci";
+		dma-coherent;
 		fsl,lut_diff;
 		num-lanes = <4>;
 		bus-range = <0x0 0xff>;
@@ -472,6 +473,7 @@
 		#address-cells = <3>;
 		#size-cells = <2>;
 		device_type = "pci";
+		dma-coherent;
 		fsl,lut_diff;
 		num-lanes = <4>;
 		bus-range = <0x0 0xff>;
@@ -497,6 +499,7 @@
 		#address-cells = <3>;
 		#size-cells = <2>;
 		device_type = "pci";
+		dma-coherent;
 		fsl,lut_diff;
 		num-lanes = <8>;
 		bus-range = <0x0 0xff>;
@@ -522,6 +525,7 @@
 		#address-cells = <3>;
 		#size-cells = <2>;
 		device_type = "pci";
+		dma-coherent;
 		fsl,lut_diff;
 		num-lanes = <4>;
 		bus-range = <0x0 0xff>;
