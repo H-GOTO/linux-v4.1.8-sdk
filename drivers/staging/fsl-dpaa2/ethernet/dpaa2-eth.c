@@ -52,11 +52,6 @@ MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Freescale Semiconductor, Inc");
 MODULE_DESCRIPTION("Freescale DPAA2 Ethernet Driver");
 
-/* Oldest DPAA2 objects version we are compatible with */
-#define DPAA2_SUPPORTED_DPNI_VERSION	6
-#define DPAA2_SUPPORTED_DPBP_VERSION	2
-#define DPAA2_SUPPORTED_DPCON_VERSION	2
-
 static void validate_rx_csum(struct dpaa2_eth_priv *priv,
 			     u32 fd_status,
 			     struct sk_buff *skb)
@@ -1382,7 +1377,7 @@ static void dpaa2_eth_set_rx_mode(struct net_device *net_dev)
 		 * in promisc mode, in order to avoid frame loss while we
 		 * progressively add entries to the table.
 		 * We don't know whether we had been in promisc already, and
-		 * making an MC call to find it is expensive; so set uc promisc
+		 * making an MC call to find out is expensive; so set uc promisc
 		 * nonetheless.
 		 */
 		err = dpni_set_unicast_promisc(mc_io, 0, mc_token, 1);
@@ -1530,47 +1525,6 @@ static void cdan_cb(struct dpaa2_io_notification_ctx *ctx)
 	napi_schedule_irqoff(&ch->napi);
 }
 
-/* Verify that the FLIB API version of various MC objects is supported
- * by our driver
- */
-static int check_obj_version(struct fsl_mc_device *ls_dev, u16 mc_version)
-{
-	char *name = ls_dev->obj_desc.type;
-	struct device *dev = &ls_dev->dev;
-	u16 supported_version, flib_version;
-
-	if (strcmp(name, "dpni") == 0) {
-		flib_version = DPNI_VER_MAJOR;
-		supported_version = DPAA2_SUPPORTED_DPNI_VERSION;
-	} else if (strcmp(name, "dpbp") == 0) {
-		flib_version = DPBP_VER_MAJOR;
-		supported_version = DPAA2_SUPPORTED_DPBP_VERSION;
-	} else if (strcmp(name, "dpcon") == 0) {
-		flib_version = DPCON_VER_MAJOR;
-		supported_version = DPAA2_SUPPORTED_DPCON_VERSION;
-	} else {
-		dev_err(dev, "invalid object type (%s)\n", name);
-		return -EINVAL;
-	}
-
-	/* Check that the FLIB-defined version matches the one reported by MC */
-	if (mc_version != flib_version) {
-		dev_err(dev, "%s FLIB version mismatch: MC reports %d, we have %d\n",
-			name, mc_version, flib_version);
-		return -EINVAL;
-	}
-
-	/* ... and that we actually support it */
-	if (mc_version < supported_version) {
-		dev_err(dev, "Unsupported %s FLIB version (%d)\n",
-			name, mc_version);
-		return -EINVAL;
-	}
-	dev_dbg(dev, "Using %s FLIB version %d\n", name, mc_version);
-
-	return 0;
-}
-
 /* Allocate and configure a DPCON object */
 static struct fsl_mc_device *setup_dpcon(struct dpaa2_eth_priv *priv)
 {
@@ -1592,15 +1546,17 @@ static struct fsl_mc_device *setup_dpcon(struct dpaa2_eth_priv *priv)
 		goto err_open;
 	}
 
+	err = dpcon_reset(priv->mc_io, 0, dpcon->mc_handle);
+	if (err) {
+		dev_err(dev, "dpcon_reset() failed\n");
+		goto err_reset;
+	}
+
 	err = dpcon_get_attributes(priv->mc_io, 0, dpcon->mc_handle, &attrs);
 	if (err) {
 		dev_err(dev, "dpcon_get_attributes() failed\n");
 		goto err_get_attr;
 	}
-
-	err = check_obj_version(dpcon, attrs.version.major);
-	if (err)
-		goto err_dpcon_ver;
 
 	err = dpcon_enable(priv->mc_io, 0, dpcon->mc_handle);
 	if (err) {
@@ -1611,8 +1567,8 @@ static struct fsl_mc_device *setup_dpcon(struct dpaa2_eth_priv *priv)
 	return dpcon;
 
 err_enable:
-err_dpcon_ver:
 err_get_attr:
+err_reset:
 	dpcon_close(priv->mc_io, 0, dpcon->mc_handle);
 err_open:
 	fsl_mc_object_free(dpcon);
@@ -1878,6 +1834,12 @@ static int setup_dpbp(struct dpaa2_eth_priv *priv)
 		goto err_open;
 	}
 
+	err = dpbp_reset(priv->mc_io, 0, dpbp_dev->mc_handle);
+	if (err) {
+		dev_err(dev, "dpbp_reset() failed\n");
+		goto err_reset;
+	}
+
 	err = dpbp_enable(priv->mc_io, 0, dpbp_dev->mc_handle);
 	if (err) {
 		dev_err(dev, "dpbp_enable() failed\n");
@@ -1891,16 +1853,12 @@ static int setup_dpbp(struct dpaa2_eth_priv *priv)
 		goto err_get_attr;
 	}
 
-	err = check_obj_version(dpbp_dev, priv->dpbp_attrs.version.major);
-	if (err)
-		goto err_dpbp_ver;
-
 	return 0;
 
-err_dpbp_ver:
 err_get_attr:
 	dpbp_disable(priv->mc_io, 0, dpbp_dev->mc_handle);
 err_enable:
+err_reset:
 	dpbp_close(priv->mc_io, 0, dpbp_dev->mc_handle);
 err_open:
 	fsl_mc_object_free(dpbp_dev);
@@ -1940,6 +1898,12 @@ static int setup_dpni(struct fsl_mc_device *ls_dev)
 	ls_dev->mc_io = priv->mc_io;
 	ls_dev->mc_handle = priv->mc_token;
 
+	err = dpni_reset(priv->mc_io, 0, priv->mc_token);
+	if (err) {
+		dev_err(dev, "dpni_reset() failed\n");
+		goto err_reset;
+	}
+
 	/* Map a memory region which will be used by MC to pass us an
 	 * attribute structure
 	 */
@@ -1968,10 +1932,6 @@ static int setup_dpni(struct fsl_mc_device *ls_dev)
 		dev_err(dev, "dpni_get_attributes() failed (err=%d)\n", err);
 		goto err_get_attr;
 	}
-
-	err = check_obj_version(ls_dev, priv->dpni_attrs.version.major);
-	if (err)
-		goto err_dpni_ver;
 
 	memset(&priv->dpni_ext_cfg, 0, sizeof(priv->dpni_ext_cfg));
 	err = dpni_extract_extended_cfg(&priv->dpni_ext_cfg, dma_mem);
@@ -2048,11 +2008,11 @@ err_cls_rule:
 err_data_offset:
 err_buf_layout:
 err_extract:
-err_dpni_ver:
 err_get_attr:
 err_dma_map:
 	kfree(dma_mem);
 err_alloc:
+err_reset:
 	dpni_close(priv->mc_io, 0, priv->mc_token);
 err_open:
 	return err;
@@ -2186,6 +2146,131 @@ static int setup_rx_err_flow(struct dpaa2_eth_priv *priv,
 }
 #endif
 
+/* default hash key fields */
+static struct dpaa2_eth_hash_fields default_hash_fields[] = {
+	{
+		/* L2 header */
+		.rxnfc_field = RXH_L2DA,
+		.cls_prot = NET_PROT_ETH,
+		.cls_field = NH_FLD_ETH_DA,
+		.size = 6,
+	}, {
+		.cls_prot = NET_PROT_ETH,
+		.cls_field = NH_FLD_ETH_SA,
+		.size = 6,
+	}, {
+		/* This is the last ethertype field parsed:
+		 * depending on frame format, it can be the MAC ethertype
+		 * or the VLAN etype.
+		 */
+		.cls_prot = NET_PROT_ETH,
+		.cls_field = NH_FLD_ETH_TYPE,
+		.size = 2,
+	}, {
+		/* VLAN header */
+		.rxnfc_field = RXH_VLAN,
+		.cls_prot = NET_PROT_VLAN,
+		.cls_field = NH_FLD_VLAN_TCI,
+		.size = 2,
+	}, {
+		/* IP header */
+		.rxnfc_field = RXH_IP_SRC,
+		.cls_prot = NET_PROT_IP,
+		.cls_field = NH_FLD_IP_SRC,
+		.size = 4,
+	}, {
+		.rxnfc_field = RXH_IP_DST,
+		.cls_prot = NET_PROT_IP,
+		.cls_field = NH_FLD_IP_DST,
+		.size = 4,
+	}, {
+		.rxnfc_field = RXH_L3_PROTO,
+		.cls_prot = NET_PROT_IP,
+		.cls_field = NH_FLD_IP_PROTO,
+		.size = 1,
+	}, {
+		/* Using UDP ports, this is functionally equivalent to raw
+		 * byte pairs from L4 header.
+		 */
+		.rxnfc_field = RXH_L4_B_0_1,
+		.cls_prot = NET_PROT_UDP,
+		.cls_field = NH_FLD_UDP_PORT_SRC,
+		.size = 2,
+	}, {
+		.rxnfc_field = RXH_L4_B_2_3,
+		.cls_prot = NET_PROT_UDP,
+		.cls_field = NH_FLD_UDP_PORT_DST,
+		.size = 2,
+	},
+};
+
+/* Set RX hash options */
+int set_hash(struct dpaa2_eth_priv *priv)
+{
+	struct device *dev = priv->net_dev->dev.parent;
+	struct dpkg_profile_cfg cls_cfg;
+	struct dpni_rx_tc_dist_cfg dist_cfg;
+	u8 *dma_mem;
+	int i;
+	int err = 0;
+
+	memset(&cls_cfg, 0, sizeof(cls_cfg));
+
+	for (i = 0; i < priv->num_hash_fields; i++) {
+		struct dpkg_extract *key =
+			&cls_cfg.extracts[cls_cfg.num_extracts];
+
+		key->type = DPKG_EXTRACT_FROM_HDR;
+		key->extract.from_hdr.prot = priv->hash_fields[i].cls_prot;
+		key->extract.from_hdr.type = DPKG_FULL_FIELD;
+		key->extract.from_hdr.field = priv->hash_fields[i].cls_field;
+		cls_cfg.num_extracts++;
+
+		priv->rx_flow_hash |= priv->hash_fields[i].rxnfc_field;
+	}
+
+	dma_mem = kzalloc(DPAA2_CLASSIFIER_DMA_SIZE, GFP_DMA | GFP_KERNEL);
+	if (!dma_mem)
+		return -ENOMEM;
+
+	err = dpni_prepare_key_cfg(&cls_cfg, dma_mem);
+	if (err) {
+		dev_err(dev, "dpni_prepare_key_cfg error %d", err);
+		return err;
+	}
+
+	memset(&dist_cfg, 0, sizeof(dist_cfg));
+
+	/* Prepare for setting the rx dist */
+	dist_cfg.key_cfg_iova = dma_map_single(dev, dma_mem,
+					       DPAA2_CLASSIFIER_DMA_SIZE,
+					       DMA_TO_DEVICE);
+	if (dma_mapping_error(dev, dist_cfg.key_cfg_iova)) {
+		dev_err(dev, "DMA mapping failed\n");
+		kfree(dma_mem);
+		return -ENOMEM;
+	}
+
+	dist_cfg.dist_size = dpaa2_eth_queue_count(priv);
+	if (dpaa2_eth_fs_enabled(priv)) {
+		dist_cfg.dist_mode = DPNI_DIST_MODE_FS;
+		dist_cfg.fs_cfg.miss_action = DPNI_FS_MISS_HASH;
+	} else {
+		dist_cfg.dist_mode = DPNI_DIST_MODE_HASH;
+	}
+
+	err = dpni_set_rx_tc_dist(priv->mc_io, 0, priv->mc_token, 0, &dist_cfg);
+	dma_unmap_single(dev, dist_cfg.key_cfg_iova,
+			 DPAA2_CLASSIFIER_DMA_SIZE, DMA_TO_DEVICE);
+	kfree(dma_mem);
+	if (err) {
+		dev_err(dev, "dpni_set_rx_tc_dist() error %d\n", err);
+		return err;
+	}
+
+	return 0;
+}
+
 /* Bind the DPNI to its needed objects and resources: buffer pool, DPIOs,
  * frame queues and channels
  */
@@ -2208,15 +2293,22 @@ static int bind_dpni(struct dpaa2_eth_priv *priv)
 		return err;
 	}
 
-	check_fs_support(net_dev);
+	/* Verify classification options and disable hashing and/or
+	 * flow steering support in case of invalid configuration values
+	 */
+	check_cls_support(priv);
 
-	/* have the interface implicitly distribute traffic based on supported
-	 * header fields
+	/* have the interface implicitly distribute traffic based on
+	 * a static hash key
 	 */
 	if (dpaa2_eth_hash_enabled(priv)) {
-		err = dpaa2_eth_set_hash(net_dev, DPAA2_RXH_SUPPORTED);
-		if (err)
+		priv->hash_fields = default_hash_fields;
+		priv->num_hash_fields = ARRAY_SIZE(default_hash_fields);
+		err = set_hash(priv);
+		if (err) {
+			dev_err(dev, "Hashing configuration failed\n");
 			return err;
+		}
 	}
 
 	/* Configure handling of error frames */

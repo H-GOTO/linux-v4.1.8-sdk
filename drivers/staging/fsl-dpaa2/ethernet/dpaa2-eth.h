@@ -40,7 +40,6 @@
 #include "../../fsl-mc/include/dpbp-cmd.h"
 #include "../../fsl-mc/include/dpcon.h"
 #include "../../fsl-mc/include/dpcon-cmd.h"
-#include "../../fsl-mc/include/dpmng.h"
 #include "dpni.h"
 #include "dpni-cmd.h"
 
@@ -54,8 +53,8 @@
  */
 #define DPAA2_ETH_MAX_SG_ENTRIES	((64 * 1024) / DPAA2_ETH_RX_BUF_SIZE)
 
-/* Maximum acceptable MTU value. It is in direct relation with the MC-enforced
- * Max Frame Length (currently 10k).
+/* Maximum acceptable MTU value. It is in direct relation with the hardware
+ * enforced Max Frame Length (currently 10k).
  */
 #define DPAA2_ETH_MFL			(10 * 1024)
 #define DPAA2_ETH_MAX_MTU		(DPAA2_ETH_MFL - VLAN_ETH_HLEN)
@@ -286,6 +285,14 @@ struct dpaa2_eth_cls_rule {
 	bool in_use;
 };
 
+struct dpaa2_eth_hash_fields {
+	u64 rxnfc_field;
+	enum net_prot cls_prot;
+	int cls_field;
+	int offset;
+	int size;
+};
+
 /* Driver private data */
 struct dpaa2_eth_priv {
 	struct net_device *net_dev;
@@ -330,8 +337,10 @@ struct dpaa2_eth_priv {
 	bool do_link_poll;
 	struct task_struct *poll_thread;
 
+	struct dpaa2_eth_hash_fields *hash_fields;
+	u8 num_hash_fields;
 	/* enabled ethtool hashing bits */
-	u64 rx_hash_fields;
+	u64 rx_flow_hash;
 
 #ifdef CONFIG_FSL_DPAA2_ETH_DEBUGFS
 	struct dpaa2_debugfs dbg;
@@ -346,25 +355,24 @@ struct dpaa2_eth_priv {
 	bool ts_rx_en; /* Rx timestamping enabled */
 };
 
-/* default Rx hash options, set during probing */
-#define DPAA2_RXH_SUPPORTED	(RXH_L2DA | RXH_VLAN | RXH_L3_PROTO \
-				| RXH_IP_SRC | RXH_IP_DST | RXH_L4_B_0_1 \
-				| RXH_L4_B_2_3)
-
 #define dpaa2_eth_hash_enabled(priv)	\
 	((priv)->dpni_attrs.options & DPNI_OPT_DIST_HASH)
 
 #define dpaa2_eth_fs_enabled(priv)	\
 	((priv)->dpni_attrs.options & DPNI_OPT_DIST_FS)
 
+#define dpaa2_eth_fs_mask_enabled(priv)	\
+	((priv)->dpni_attrs.options & DPNI_OPT_FS_MASK_SUPPORT)
+
 #define DPAA2_CLASSIFIER_ENTRY_COUNT 16
 
 /* Required by struct dpni_attr::ext_cfg_iova */
 #define DPAA2_EXT_CFG_SIZE	256
 
-extern const struct ethtool_ops dpaa2_ethtool_ops;
+/* size of DMA memory used to pass configuration to classifier, in bytes */
+#define DPAA2_CLASSIFIER_DMA_SIZE 256
 
-int dpaa2_eth_set_hash(struct net_device *net_dev, u64 flags);
+extern const struct ethtool_ops dpaa2_ethtool_ops;
 
 static int dpaa2_eth_queue_count(struct dpaa2_eth_priv *priv)
 {
@@ -384,6 +392,6 @@ static inline int dpaa2_eth_max_channels(struct dpaa2_eth_priv *priv)
 		     priv->dpni_attrs.max_senders);
 }
 
-void check_fs_support(struct net_device *);
+void check_cls_support(struct dpaa2_eth_priv *priv);
 
 #endif	/* __DPAA2_H */
