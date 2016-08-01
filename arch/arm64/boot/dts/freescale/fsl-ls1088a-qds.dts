@@ -78,32 +78,36 @@
 };
 
 &dspi {
-	bus-num = <0>;
+	status = "disabled";
+
+/*    Enable for actual platform
+        bus-num = <0>;
 	status = "okay";
 
 	flash@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		compatible = "n25q128a11", "jedec,spi-nor";  /* 16MB */
+		compatible = "n25q128a11", "jedec,spi-nor";
 		reg = <0>;
-		spi-max-frequency = <10000000>; /* input clock */
+		spi-max-frequency = <10000000>;
 	};
 
 	flash@1 {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		compatible = "sst,sst25wf040b", "jedec,spi-nor";  /* 512KB */
+		compatible = "sst,sst25wf040b", "jedec,spi-nor";
 		reg = <1>;
-		spi-max-frequency = <35000000>; /* input clock */
+		spi-max-frequency = <35000000>;
 	};
 
 	flash@2 {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		compatible = "eon,en25s64", "jedec,spi-nor";   /* 8MB */
+		compatible = "eon,en25s64", "jedec,spi-nor";
 		reg = <2>;
-		spi-max-frequency = <35000000>; /* input clock */
+		spi-max-frequency = <35000000>;
 	};
+*/
 };
 
 &qspi {
