@@ -1,4 +1,4 @@
-/* Copyright 2013-2015 Freescale Semiconductor Inc.
+/* Copyright 2013-2016 Freescale Semiconductor Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -54,7 +54,7 @@ int dpmcp_open(struct fsl_mc_io *mc_io,
 		return err;
 
 	/* retrieve response parameters */
-	*token = MC_CMD_HDR_READ_TOKEN(cmd.header);
+	*token = get_mc_cmd_hdr_token(cmd.header);
 
 	return err;
 }
@@ -75,17 +75,17 @@ int dpmcp_close(struct fsl_mc_io *mc_io,
 }
 
 int dpmcp_create(struct fsl_mc_io *mc_io,
+		 uint16_t dprc_token,
 		 uint32_t cmd_flags,
 		 const struct dpmcp_cfg *cfg,
-		 uint16_t *token)
+		 uint32_t *object_id)
 {
 	struct mc_command cmd = { 0 };
 	int err;
 
 	/* prepare command */
 	cmd.header = mc_encode_cmd_header(DPMCP_CMDID_CREATE,
-					  cmd_flags,
-					  0);
+					cmd_flags, dprc_token);
 	cmd.params[0] |= mc_enc(0, 32, cfg->portal_id);
 
 	/* send command to mc*/
@@ -94,22 +94,24 @@ int dpmcp_create(struct fsl_mc_io *mc_io,
 		return err;
 
 	/* retrieve response parameters */
-	*token = MC_CMD_HDR_READ_TOKEN(cmd.header);
+	*object_id = get_mc_cmd_create_object_id(&cmd);
 
 	return 0;
 }
 
 int dpmcp_destroy(struct fsl_mc_io *mc_io,
+		  uint16_t dprc_token,
 		  uint32_t cmd_flags,
-		  uint16_t token)
+		  uint32_t object_id)
 {
 	struct mc_command cmd = { 0 };
 
 	/* prepare command */
 	cmd.header = mc_encode_cmd_header(DPMCP_CMDID_DESTROY,
-					  cmd_flags,
-					  token);
-
+					cmd_flags,
+					dprc_token);
+	/* set object id to destroy */
+	cmd.params[0] = mc_enc(0, sizeof object_id, object_id);
 	/* send command to mc*/
 	return mc_send_command(mc_io, &cmd);
 }
@@ -144,7 +146,7 @@ int dpmcp_set_irq(struct fsl_mc_io *mc_io,
 	cmd.params[0] |= mc_enc(0, 8, irq_index);
 	cmd.params[0] |= mc_enc(32, 32, irq_cfg->val);
 	cmd.params[1] |= mc_enc(0, 64, irq_cfg->paddr);
-	cmd.params[2] |= mc_enc(0, 32, irq_cfg->irq_num);
+	cmd.params[2] |= mc_enc(0, 32, irq_cfg->user_irq_id);
 
 	/* send command to mc*/
 	return mc_send_command(mc_io, &cmd);
@@ -174,7 +176,7 @@ int dpmcp_get_irq(struct fsl_mc_io *mc_io,
 	/* retrieve response parameters */
 	irq_cfg->val = (uint32_t)mc_dec(cmd.params[0], 0, 32);
 	irq_cfg->paddr = (uint64_t)mc_dec(cmd.params[1], 0, 64);
-	irq_cfg->irq_num = (int)mc_dec(cmd.params[2], 0, 32);
+	irq_cfg->user_irq_id = (int)mc_dec(cmd.params[2], 0, 32);
 	*type = (int)mc_dec(cmd.params[2], 32, 32);
 	return 0;
 }
@@ -312,7 +314,27 @@ int dpmcp_get_attributes(struct fsl_mc_io *mc_io,
 
 	/* retrieve response parameters */
 	attr->id = (int)mc_dec(cmd.params[0], 32, 32);
-	attr->version.major = (uint16_t)mc_dec(cmd.params[1], 0, 16);
-	attr->version.minor = (uint16_t)mc_dec(cmd.params[1], 16, 16);
+
+	return 0;
+}
+
+int dpmcp_get_api_version(struct fsl_mc_io *mc_io,
+			   uint32_t cmd_flags,
+			   uint16_t* major_ver,
+			   uint16_t* minor_ver)
+{
+	struct mc_command cmd = { 0 };
+	int err;
+
+	cmd.header = mc_encode_cmd_header(DPMCP_CMDID_GET_API_VERSION,
+					cmd_flags,
+					0);
+
+	err = mc_send_command(mc_io, &cmd);
+	if (err)
+		return err;
+
+	get_mc_cmd_object_api_ver(&cmd, major_ver, minor_ver);
+
 	return 0;
 }
