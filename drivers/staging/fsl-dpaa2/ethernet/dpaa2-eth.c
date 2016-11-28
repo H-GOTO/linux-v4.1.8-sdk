@@ -209,7 +209,8 @@ static struct sk_buff *build_frag_skb(struct dpaa2_eth_priv *priv,
 static void dpaa2_eth_rx(struct dpaa2_eth_priv *priv,
 			 struct dpaa2_eth_channel *ch,
 			 const struct dpaa2_fd *fd,
-			 struct napi_struct *napi)
+			 struct napi_struct *napi,
+			 u16 queue_id)
 {
 	dma_addr_t addr = dpaa2_fd_get_addr(fd);
 	u8 fd_format = dpaa2_fd_get_format(fd);
@@ -278,6 +279,12 @@ static void dpaa2_eth_rx(struct dpaa2_eth_priv *priv,
 
 	skb->protocol = eth_type_trans(skb, priv->net_dev);
 
+	/* Record Rx queue - this will be used when picking a Tx queue to
+	 * forward the frames. We're keeping flow affinity through the
+	 * network stack.
+	 */
+	skb_record_rx_queue(skb, queue_id);
+
 	percpu_stats->rx_packets++;
 	percpu_stats->rx_bytes += skb->len;
 
@@ -300,7 +307,8 @@ err_build_skb:
 static void dpaa2_eth_rx_err(struct dpaa2_eth_priv *priv,
 			     struct dpaa2_eth_channel *ch,
 			     const struct dpaa2_fd *fd,
-			     struct napi_struct *napi __always_unused)
+			     struct napi_struct *napi __always_unused,
+			     u16 queue_id __always_unused)
 {
 	struct device *dev = priv->net_dev->dev.parent;
 	dma_addr_t addr = dpaa2_fd_get_addr(fd);
@@ -308,17 +316,28 @@ static void dpaa2_eth_rx_err(struct dpaa2_eth_priv *priv,
 	struct rtnl_link_stats64 *percpu_stats;
 	struct dpaa2_fas *fas;
 	u32 status = 0;
+	bool check_fas_errors = false;
 
 	dma_unmap_single(dev, addr, DPAA2_ETH_RX_BUF_SIZE, DMA_FROM_DEVICE);
 	vaddr = phys_to_virt(addr);
 
-	if (fd->simple.frc & DPAA2_FD_FRC_FASV) {
+	/* check frame errors in the FD field */
+	if (fd->simple.ctrl & DPAA2_FD_RX_ERR_MASK) {
+		check_fas_errors = !!(fd->simple.ctrl & DPAA2_FD_CTRL_FAERR) &&
+			!!(fd->simple.frc & DPAA2_FD_FRC_FASV);
+		if (net_ratelimit())
+			netdev_dbg(priv->net_dev, "Rx frame FD err: %x08\n",
+				fd->simple.ctrl & DPAA2_FD_RX_ERR_MASK);
+	}
+
+	/* check frame errors in the FAS field */
+	if (check_fas_errors) {
 		fas = (struct dpaa2_fas *)
 			(vaddr + priv->buf_layout.private_data_size);
 		status = le32_to_cpu(fas->status);
 		if (net_ratelimit())
-			netdev_warn(priv->net_dev, "Rx frame error: 0x%08x\n",
-				    status & DPAA2_ETH_RX_ERR_MASK);
+			netdev_dbg(priv->net_dev, "Rx frame FAS err: 0x%08x\n",
+				    status & DPAA2_FAS_RX_ERR_MASK);
 	}
 	free_rx_fd(priv, fd, vaddr);
 
@@ -365,7 +384,7 @@ static bool consume_frames(struct dpaa2_eth_channel *ch, int *rx_cleaned,
 		fq = (struct dpaa2_eth_fq *)dpaa2_dq_fqd_ctx(dq);
 		fq->stats.frames++;
 
-		fq->consume(priv, ch, fd, &ch->napi);
+		fq->consume(priv, ch, fd, &ch->napi, fq->flowid);
 		has_cleaned = true;
 
 		if (fq->type == DPAA2_TX_CONF_FQ)
@@ -635,7 +654,7 @@ static void free_tx_fd(const struct dpaa2_eth_priv *priv,
 	 * buffer but before we free it. The caller function is responsible
 	 * for checking the status value.
 	 */
-	if (status && (fd->simple.frc & DPAA2_FD_FRC_FASV)) {
+	if (status) {
 		fas = (struct dpaa2_fas *)
 			((void *)skbh + priv->buf_layout.private_data_size);
 		*status = le32_to_cpu(fas->status);
@@ -656,7 +675,7 @@ static int dpaa2_eth_tx(struct sk_buff *skb, struct net_device *net_dev)
 	struct rtnl_link_stats64 *percpu_stats;
 	struct dpaa2_eth_drv_stats *percpu_extras;
 	struct dpaa2_eth_fq fq;
-	u16 queue_mapping;
+	u16 queue_mapping = skb_get_queue_mapping(skb);
 	int err, i;
 
 	percpu_stats = this_cpu_ptr(priv->percpu_stats);
@@ -703,10 +722,6 @@ static int dpaa2_eth_tx(struct sk_buff *skb, struct net_device *net_dev)
 	/* Tracing point */
 	trace_dpaa2_tx_fd(net_dev, &fd);
 
-	/* TxConf FQ selection primarily based on cpu affinity; this is
-	 * non-migratable context, so it's safe to call smp_processor_id().
-	 */
-	queue_mapping = smp_processor_id() % priv->dpni_attrs.num_queues;
 	fq = priv->fq[queue_mapping];
 	for (i = 0; i < (DPAA2_ETH_MAX_TX_QUEUES << 1); i++) {
 		err = dpaa2_io_service_enqueue_qd(NULL, priv->tx_qdid, 0,
@@ -741,11 +756,14 @@ err_alloc_headroom:
 static void dpaa2_eth_tx_conf(struct dpaa2_eth_priv *priv,
 			      struct dpaa2_eth_channel *ch,
 			      const struct dpaa2_fd *fd,
-			      struct napi_struct *napi __always_unused)
+			      struct napi_struct *napi __always_unused,
+			      u16 queue_id __always_unused)
 {
 	struct rtnl_link_stats64 *percpu_stats;
 	struct dpaa2_eth_drv_stats *percpu_extras;
 	u32 status = 0;
+	bool errors = !!(fd->simple.ctrl & DPAA2_FD_TX_ERR_MASK);
+	bool check_fas_errors = false;
 
 	/* Tracing point */
 	trace_dpaa2_tx_conf_fd(priv->net_dev, fd);
@@ -754,13 +772,28 @@ static void dpaa2_eth_tx_conf(struct dpaa2_eth_priv *priv,
 	percpu_extras->tx_conf_frames++;
 	percpu_extras->tx_conf_bytes += dpaa2_fd_get_len(fd);
 
-	free_tx_fd(priv, fd, &status);
-
-	if (unlikely(status & DPAA2_ETH_TXCONF_ERR_MASK)) {
-		percpu_stats = this_cpu_ptr(priv->percpu_stats);
-		/* Tx-conf logically pertains to the egress path. */
-		percpu_stats->tx_errors++;
+	/* check frame errors in the FD field */
+	if (unlikely(errors)) {
+		check_fas_errors = !!(fd->simple.ctrl & DPAA2_FD_CTRL_FAERR) &&
+			!!(fd->simple.frc & DPAA2_FD_FRC_FASV);
+		if (net_ratelimit())
+			netdev_dbg(priv->net_dev, "Tx frame FD err: %x08\n",
+				fd->simple.ctrl & DPAA2_FD_TX_ERR_MASK);
 	}
+
+	free_tx_fd(priv, fd, check_fas_errors ? &status : NULL);
+
+	/* if there are no errors, we're done */
+	if (likely(!errors))
+		return;
+
+	percpu_stats = this_cpu_ptr(priv->percpu_stats);
+	/* Tx-conf logically pertains to the egress path. */
+	percpu_stats->tx_errors++;
+
+	if (net_ratelimit())
+		netdev_dbg(priv->net_dev, "Tx frame FAS err: %x08\n",
+			status & DPAA2_FAS_TX_ERR_MASK);
 }
 
 static int set_rx_csum(struct dpaa2_eth_priv *priv, bool enable)
@@ -1230,15 +1263,12 @@ static int dpaa2_eth_init(struct net_device *net_dev)
 	u32 options = priv->dpni_attrs.options;
 
 	/* Capabilities listing */
-	supported |= IFF_LIVE_ADDR_CHANGE | IFF_PROMISC | IFF_ALLMULTI;
+	supported |= IFF_LIVE_ADDR_CHANGE;
 
-	if (options & DPNI_OPT_NO_MAC_FILTER) {
+	if (options & DPNI_OPT_NO_MAC_FILTER)
 		not_supported |= IFF_UNICAST_FLT;
-		not_supported |= IFF_MULTICAST;
-	} else {
+	else
 		supported |= IFF_UNICAST_FLT;
-		supported |= IFF_MULTICAST;
-	}
 
 	net_dev->priv_flags |= supported;
 	net_dev->priv_flags &= ~not_supported;
@@ -1946,6 +1976,21 @@ static int setup_dpni(struct fsl_mc_device *ls_dev)
 	dev_info(dev, "attributes: qos_key_size = %d\n", priv->dpni_attrs.qos_key_size);
 	dev_info(dev, "attributes: fs_key_size = %d\n", priv->dpni_attrs.fs_key_size);
 
+	/* Update number of logical FQs in netdev */
+	err = netif_set_real_num_tx_queues(net_dev,
+			dpaa2_eth_queue_count(priv));
+	if (err) {
+		dev_err(dev, "netif_set_real_num_tx_queues failed (%d)\n", err);
+		goto err_set_tx_queues;
+	}
+
+	err = netif_set_real_num_rx_queues(net_dev,
+			dpaa2_eth_queue_count(priv));
+	if (err) {
+		dev_err(dev, "netif_set_real_num_rx_queues failed (%d)\n", err);
+		goto err_set_rx_queues;
+	}
+
 	/* Configure our buffers' layout */
 	priv->buf_layout.options = DPNI_BUF_LAYOUT_OPT_PARSER_RESULT |
 					DPNI_BUF_LAYOUT_OPT_FRAME_STATUS |
@@ -2020,6 +2065,8 @@ static int setup_dpni(struct fsl_mc_device *ls_dev)
 err_cls_rule:
 err_data_offset:
 err_buf_layout:
+err_set_rx_queues:
+err_set_tx_queues:
 err_get_attr:
 err_reset:
 	dpni_close(priv->mc_io, 0, priv->mc_token);
@@ -2250,6 +2297,7 @@ int set_hash(struct dpaa2_eth_priv *priv)
 	err = dpni_prepare_key_cfg(&cls_cfg, dma_mem);
 	if (err) {
 		dev_err(dev, "dpni_prepare_key_cfg() failed (%d)", err);
+		kfree(dma_mem);
 		return err;
 	}
 
@@ -2326,7 +2374,7 @@ static int bind_dpni(struct dpaa2_eth_priv *priv)
 	}
 
 	/* Configure handling of error frames */
-	err_cfg.errors = DPAA2_ETH_RX_ERR_MASK;
+	err_cfg.errors = DPAA2_FAS_RX_ERR_MASK;
 	err_cfg.set_frame_annotation = 1;
 #ifdef CONFIG_FSL_DPAA2_ETH_USE_ERR_QUEUE
 	err_cfg.error_action = DPNI_ERROR_ACTION_SEND_TO_ERROR_QUEUE;
@@ -2535,7 +2583,7 @@ static irqreturn_t dpni_irq0_handler(int irq_num, void *arg)
 static irqreturn_t dpni_irq0_handler_thread(int irq_num, void *arg)
 {
 	u8 irq_index = DPNI_IRQ_INDEX;
-	u32 status, clear = 0;
+	u32 status = 0, clear = 0;
 	struct device *dev = (struct device *)arg;
 	struct fsl_mc_device *dpni_dev = to_fsl_mc_device(dev);
 	struct net_device *net_dev = dev_get_drvdata(dev);
