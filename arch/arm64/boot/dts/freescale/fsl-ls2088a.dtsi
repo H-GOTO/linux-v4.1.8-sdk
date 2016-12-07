@@ -618,7 +618,7 @@
 
 	sata0: sata@3200000 {
 		status = "disabled";
-		compatible = "fsl,ls2088a-ahci", "fsl,ls2080a-ahci";
+		compatible = "fsl,ls2088a-ahci";
 		reg = <0x0 0x3200000 0x0 0x10000>;
 		interrupts = <0 133 0x4>; /* Level high type */
 		clocks = <&clockgen 4 3>;
@@ -626,7 +626,7 @@
 
 	sata1: sata@3210000 {
 		status = "disabled";
-		compatible = "fsl,ls2088a-ahci", "fsl,ls2080a-ahci";
+		compatible = "fsl,ls2088a-ahci";
 		reg = <0x0 0x3210000 0x0 0x10000>;
 		interrupts = <0 136 0x4>; /* Level high type */
 		clocks = <&clockgen 4 3>;
